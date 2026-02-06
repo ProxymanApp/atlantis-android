@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:padding="16dp"
+    tools:context=".MainActivity">
+
+    <TextView
+        android:id="@+id/tvTitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Atlantis Sample App"
+        android:textSize="24sp"
+        android:textStyle="bold"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <TextView
+        android:id="@+id/tvStatus"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Atlantis Status"
+        android:textColor="@android:color/darker_gray"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/tvTitle" />
+
+    <LinearLayout
+        android:id="@+id/buttonContainer"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:orientation="vertical"
+        app:layout_constraintTop_toBottomOf="@id/tvStatus">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnGetRequest"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="GET Request (OkHttp)" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnPostRequest"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="POST Request (OkHttp)" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnRetrofitRequest"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Retrofit Request" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnJsonRequest"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="JSON Request (Retrofit)" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnErrorRequest"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Error Request (404)" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnStartWebSocketTest"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="Start WebSocket Test (Auto every 1s)" />
+
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/tvResultLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:text="Log:"
+        android:textStyle="bold"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/buttonContainer" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="8dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/tvResultLabel">
+
+        <TextView
+            android:id="@+id/tvResult"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@android:color/white"
+            android:fontFamily="monospace"
+            android:padding="8dp"
+            android:text="Press a button to make a request or start WebSocket test.\nWatch Proxyman for captured traffic!"
+            android:textSize="12sp" />
+
+    </ScrollView>
+
+</androidx.constraintlayout.widget.ConstraintLayout>
