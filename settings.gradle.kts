@@ -11,6 +11,7 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        mavenLocal() // For testing the published artifact locally before Maven Central release
     }
 }
 
