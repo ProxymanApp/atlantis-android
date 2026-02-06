@@ -2,6 +2,8 @@
 
 Capture HTTP/HTTPS traffic from Android apps and send to Proxyman for debugging.
 
+[![Capture HTTPS from Android app](images/capture_android_https.jpg)](https://proxyman.com)
+
 ## Overview
 
 Atlantis Android is a companion library to [Proxyman](https://proxyman.com) that allows you to capture and inspect network traffic from your Android applications without configuring a proxy or installing certificates.
