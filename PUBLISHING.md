@@ -143,16 +143,16 @@ afterEvaluate {
                     
                     developers {
                         developer {
-                            id.set("nicksantamaria")
-                            name.set("Nghia Tran")
-                            email.set("nicksantamaria@proxyman.io")
+                            id.set("proxymanllc")
+                            name.set("Proxyman LLC")
+                            email.set("support@proxyman.com")
                         }
                     }
                     
                     scm {
                         url.set("https://github.com/ProxymanApp/atlantis")
-                        connection.set("scm:git:git://github.com/ProxymanApp/atlantis.git")
-                        developerConnection.set("scm:git:ssh://git@github.com/ProxymanApp/atlantis.git")
+                        connection.set("scm:git:git://github.com/ProxymanApp/atlantis-android.git")
+                        developerConnection.set("scm:git:ssh://git@github.com/ProxymanApp/atlantis-android.git")
                     }
                 }
             }

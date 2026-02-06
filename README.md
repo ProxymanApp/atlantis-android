@@ -4,11 +4,12 @@ Capture HTTP/HTTPS traffic from Android apps and send to Proxyman for debugging.
 
 ## Overview
 
-Atlantis Android is a companion library to [Proxyman](https://proxyman.io) that allows you to capture and inspect network traffic from your Android applications without configuring a proxy or installing certificates.
+Atlantis Android is a companion library to [Proxyman](https://proxyman.com) that allows you to capture and inspect network traffic from your Android applications without configuring a proxy or installing certificates.
 
 ## Features
 
 - Automatic OkHttp traffic interception
+- WebSocket message capture (send, receive, close)
 - Works with Retrofit 2.9+ and Apollo Kotlin 3.x/4.x
 - Network Service Discovery (NSD) for automatic Proxyman detection
 - Direct connection support for emulators
@@ -63,7 +64,25 @@ val okHttpClient = OkHttpClient.Builder()
     .build()
 ```
 
-### 3. Run Your App
+### 3. Capture WebSocket Traffic (Optional)
+
+Wrap your `WebSocketListener` with `Atlantis.wrapWebSocketListener()` to capture WebSocket messages:
+
+```kotlin
+val listener = Atlantis.wrapWebSocketListener(object : WebSocketListener() {
+    override fun onOpen(webSocket: WebSocket, response: Response) {
+        // your logic
+    }
+    override fun onMessage(webSocket: WebSocket, text: String) {
+        // your logic
+    }
+    // ...
+})
+
+okHttpClient.newWebSocket(request, listener)
+```
+
+### 4. Run Your App
 
 Open Proxyman on your Mac, run your Android app, and watch the traffic appear!
 
@@ -72,18 +91,23 @@ Open Proxyman on your Mac, run your Android app, and watch the traffic appear!
 ```
 atlantis-android/
 ├── atlantis/              # Library module
-│   └── src/main/kotlin/
-│       └── com/proxyman/atlantis/
-│           ├── Atlantis.kt           # Main entry point
-│           ├── AtlantisInterceptor.kt # OkHttp interceptor
-│           ├── Configuration.kt       # Config model
-│           ├── Message.kt             # Message types
-│           ├── Packages.kt            # Data models
-│           ├── Transporter.kt         # TCP connection
-│           ├── NsdServiceDiscovery.kt # mDNS discovery
-│           └── GzipCompression.kt     # Compression
+│   └── src/
+│       ├── main/kotlin/
+│       │   └── com/proxyman/atlantis/
+│       │       ├── Atlantis.kt                  # Main entry point
+│       │       ├── AtlantisInterceptor.kt        # OkHttp interceptor
+│       │       ├── AtlantisWebSocketListener.kt  # WebSocket capture
+│       │       ├── Base64Utils.kt                # Base64 encoding
+│       │       ├── Configuration.kt              # Config model
+│       │       ├── GzipCompression.kt            # Compression
+│       │       ├── Message.kt                    # Message types
+│       │       ├── NsdServiceDiscovery.kt        # mDNS discovery
+│       │       ├── Packages.kt                   # Data models
+│       │       └── Transporter.kt                # TCP connection
+│       └── test/kotlin/                          # Unit tests
 ├── sample/                # Sample app
-└── PUBLISHING.md          # Publishing guide
+├── PUBLISHING.md          # Publishing guide
+└── README.md
 ```
 
 ## Setup
@@ -98,7 +122,7 @@ If you have Gradle installed locally:
 
 ```bash
 cd atlantis-android
-gradle wrapper --gradle-version 8.4
+gradle wrapper --gradle-version 8.7
 ```
 
 ## Building
@@ -126,4 +150,4 @@ See [PUBLISHING.md](PUBLISHING.md) for instructions on publishing to Maven Centr
 
 ## License
 
-Apache License 2.0 - see [LICENSE](../LICENSE)
+Apache License 2.0
