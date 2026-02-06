@@ -26,7 +26,37 @@ Atlantis Android is a companion library to [Proxyman](https://proxyman.com) that
 
 ## Installation
 
-### Gradle (Kotlin DSL)
+### Option 1: JitPack (Recommended)
+
+Add the JitPack repository to your `settings.gradle.kts`:
+
+```kotlin
+dependencyResolutionManagement {
+    repositories {
+        maven { url = uri("https://jitpack.io") }
+    }
+}
+```
+
+Then add the dependency in your module's `build.gradle.kts`:
+
+```kotlin
+dependencies {
+    debugImplementation("com.github.ProxymanApp:atlantis-android:v1.0.0")
+}
+```
+
+Or with Groovy (`build.gradle`):
+
+```groovy
+dependencies {
+    debugImplementation 'com.github.ProxymanApp:atlantis-android:v1.0.0'
+}
+```
+
+### Option 2: Maven Central
+
+Add the dependency in your module's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
@@ -34,7 +64,7 @@ dependencies {
 }
 ```
 
-### Gradle (Groovy)
+Or with Groovy (`build.gradle`):
 
 ```groovy
 dependencies {
