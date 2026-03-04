@@ -2,6 +2,7 @@ plugins {
     id("com.android.library")
     id("org.jetbrains.kotlin.android")
     id("maven-publish")
+    id("signing")
 }
 
 android {
@@ -111,5 +112,32 @@ afterEvaluate {
                 }
             }
         }
+
+        repositories {
+            maven {
+                name = "Sonatype"
+                val releasesRepoUrl = uri("https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/")
+                val snapshotsRepoUrl = uri("https://s01.oss.sonatype.org/content/repositories/snapshots/")
+
+                // Critical: SNAPSHOT versions must go to snapshot repo, otherwise Sonatype rejects upload.
+                url = if (version.toString().endsWith("SNAPSHOT")) snapshotsRepoUrl else releasesRepoUrl
+
+                credentials {
+                    username = project.findProperty("ossrhUsername") as String?
+                    password = project.findProperty("ossrhPassword") as String?
+                }
+            }
+        }
+    }
+
+    signing {
+        // Maven Local smoke publishes should not require GPG setup; only remote publish tasks
+        // (Sonatype/`publish`) must be signed. Without this guard, `publishToMavenLocal`
+        // fails early with "no configured signatory", which blocks dry-run/JitPack flows.
+        isRequired = gradle.startParameter.taskNames.any { taskName ->
+            taskName.contains("publish", ignoreCase = true) &&
+                !taskName.contains("MavenLocal", ignoreCase = true)
+        }
+        sign(publishing.publications["release"])
     }
 }

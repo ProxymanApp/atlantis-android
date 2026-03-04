@@ -1,0 +1,9 @@
+{
+  "archiveScript" : "",
+  "copyIgnoredOnWorktreeCreate" : false,
+  "copyUntrackedOnWorktreeCreate" : false,
+  "openActionID" : "auto",
+  "pullRequestMergeStrategy" : "merge",
+  "runScript" : "",
+  "setupScript" : ""
+}

@@ -2,15 +2,17 @@
 # publish.sh — Publish Atlantis Android to JitPack and/or Maven Central.
 #
 # Usage:
-#   ./publish.sh --version 1.2.0                            # publish to both
+#   ./publish.sh --version 1.2.0                            # publish to maven-central
 #   ./publish.sh --target jitpack       --version 1.2.0
 #   ./publish.sh --target maven-central  --version 1.2.0
+#   ./publish.sh --target maven-central  --version 1.2.0 --skip-git
 #   ./publish.sh --version 1.2.0 --dry-run
 #
 # Flags:
-#   --target   jitpack | maven-central | both  (optional, defaults to both)
+#   --target   jitpack | maven-central | both      (optional, defaults to maven-central)
 #   --version  Semver string                   (required, e.g. 1.2.0 or 1.2.0-SNAPSHOT)
-#   --dry-run  Skip destructive actions        (optional)
+#   --skip-git Skip commit/tag/release actions     (optional)
+#   --dry-run  Skip destructive actions             (optional)
 
 set -euo pipefail
 
@@ -52,6 +54,7 @@ fail() {
 # ---------------------------------------------------------------------------
 TARGET=""
 VERSION=""
+SKIP_GIT=false
 DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do
@@ -68,8 +71,12 @@ while [[ $# -gt 0 ]]; do
             DRY_RUN=true
             shift
             ;;
+        --skip-git)
+            SKIP_GIT=true
+            shift
+            ;;
         -h|--help)
-            echo "Usage: $0 [--target <jitpack|maven-central|both>] --version <SEMVER> [--dry-run]"
+            echo "Usage: $0 [--target <jitpack|maven-central|both>] --version <SEMVER> [--skip-git] [--dry-run]"
             exit 0
             ;;
         *)
@@ -78,9 +85,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Default to "both" when --target is omitted
+# Default to "maven-central" when --target is omitted
 if [[ -z "$TARGET" ]]; then
-    TARGET="both"
+    TARGET="maven-central"
 fi
 
 if [[ "$TARGET" != "jitpack" && "$TARGET" != "maven-central" && "$TARGET" != "both" ]]; then
@@ -119,6 +126,7 @@ echo -e "${BOLD} Atlantis Android — Publish${NC}"
 echo -e "${BOLD}========================================${NC}"
 echo -e "  Target:   ${CYAN}${TARGET}${NC}"
 echo -e "  Version:  ${CYAN}${VERSION}${NC}"
+echo -e "  Skip git: ${CYAN}${SKIP_GIT}${NC}"
 echo -e "  Dry run:  ${CYAN}${DRY_RUN}${NC}"
 echo ""
 
@@ -135,10 +143,28 @@ if [[ "$TARGET" == "jitpack" || "$TARGET" == "both" ]]; then
     info "gh found: $(gh --version | head -1)"
 fi
 
+if [[ "$SKIP_GIT" == false ]]; then
+    command -v git >/dev/null 2>&1 || fail "'git' not found."
+    info "git found: $(git --version)"
+fi
+
 if [[ "$TARGET" == "maven-central" || "$TARGET" == "both" ]]; then
     command -v gpg >/dev/null 2>&1 || fail "'gpg' not found. Install via: brew install gnupg"
     info "gpg found: $(gpg --version | head -1)"
 fi
+
+# Cross-platform in-place replace utility (BSD/GNU sed compatibility).
+replace_line() {
+    local pattern="$1"
+    local replacement="$2"
+    local file="$3"
+
+    if sed --version >/dev/null 2>&1; then
+        sed -i "s|^${pattern}=.*|${replacement}|" "$file"
+    else
+        sed -i '' "s|^${pattern}=.*|${replacement}|" "$file"
+    fi
+}
 
 # ---------------------------------------------------------------------------
 # Step 2: Update version in gradle.properties
@@ -147,12 +173,15 @@ step "Updating version in $GRADLE_PROPS"
 
 # Read current VERSION_CODE and increment
 CURRENT_CODE=$(grep '^VERSION_CODE=' "$GRADLE_PROPS" | cut -d'=' -f2)
+if ! [[ "$CURRENT_CODE" =~ ^[0-9]+$ ]]; then
+    fail "Invalid VERSION_CODE in $GRADLE_PROPS: '$CURRENT_CODE'"
+fi
 NEW_CODE=$((CURRENT_CODE + 1))
 
 # Replace VERSION_NAME
-sed -i '' "s/^VERSION_NAME=.*/VERSION_NAME=${VERSION}/" "$GRADLE_PROPS"
+replace_line "VERSION_NAME" "VERSION_NAME=${VERSION}" "$GRADLE_PROPS"
 # Replace VERSION_CODE
-sed -i '' "s/^VERSION_CODE=.*/VERSION_CODE=${NEW_CODE}/" "$GRADLE_PROPS"
+replace_line "VERSION_CODE" "VERSION_CODE=${NEW_CODE}" "$GRADLE_PROPS"
 
 info "VERSION_NAME → ${VERSION}"
 info "VERSION_CODE → ${NEW_CODE} (was ${CURRENT_CODE})"
@@ -179,7 +208,10 @@ info "Release AAR built successfully"
 step "Publishing to Maven Local (smoke test)"
 
 ./gradlew :atlantis:publishToMavenLocal --no-daemon
-info "Published to Maven Local (~/.m2/repository/com/proxyman/atlantis-android/${VERSION}/)"
+GROUP_ID=$(grep '^GROUP=' "$GRADLE_PROPS" | cut -d'=' -f2)
+ARTIFACT_ID=$(grep '^POM_ARTIFACT_ID=' "$GRADLE_PROPS" | cut -d'=' -f2)
+M2_GROUP_PATH="${GROUP_ID//./\/}"
+info "Published to Maven Local (~/.m2/repository/${M2_GROUP_PATH}/${ARTIFACT_ID}/${VERSION}/)"
 
 # ---------------------------------------------------------------------------
 # Target-specific steps
@@ -187,6 +219,13 @@ info "Published to Maven Local (~/.m2/repository/com/proxyman/atlantis-android/$
 
 # --- Maven Central: check creds + publish to Sonatype (before tagging) -----
 if [[ "$TARGET" == "maven-central" || "$TARGET" == "both" ]]; then
+    step "Validating Gradle Sonatype publish task"
+
+    if ! ./gradlew :atlantis:tasks --all | grep -q "publishReleasePublicationToSonatypeRepository"; then
+        fail "Task ':atlantis:publishReleasePublicationToSonatypeRepository' not found. Check atlantis/build.gradle.kts Sonatype repository name/config."
+    fi
+    info "Sonatype publish task is available"
+
     step "Checking Maven Central credentials"
 
     GRADLE_HOME_PROPS="$HOME/.gradle/gradle.properties"
@@ -195,7 +234,7 @@ if [[ "$TARGET" == "maven-central" || "$TARGET" == "both" ]]; then
     fi
 
     for key in ossrhUsername ossrhPassword signing.keyId signing.password signing.secretKeyRingFile; do
-        if ! grep -q "^${key}=" "$GRADLE_HOME_PROPS" 2>/dev/null; then
+        if ! grep -Fq "${key}=" "$GRADLE_HOME_PROPS" 2>/dev/null; then
             fail "Missing '${key}' in ~/.gradle/gradle.properties"
         fi
     done
@@ -212,32 +251,39 @@ if [[ "$TARGET" == "maven-central" || "$TARGET" == "both" ]]; then
 fi
 
 # --- Git: commit version bump, tag, push (shared, runs once) ---------------
-step "Committing version bump"
+if [[ "$SKIP_GIT" == false ]]; then
+    step "Committing version bump"
 
-if [[ "$DRY_RUN" == true ]]; then
-    warn "[dry-run] Would commit gradle.properties changes"
+    if [[ "$DRY_RUN" == true ]]; then
+        warn "[dry-run] Would commit gradle.properties changes"
+    else
+        git add "$GRADLE_PROPS"
+        git commit -m "chore: bump version to ${VERSION}"
+        info "Committed version bump"
+    fi
+
+    step "Creating git tag v${VERSION}"
+
+    if [[ "$DRY_RUN" == true ]]; then
+        warn "[dry-run] Would create and push tag v${VERSION}"
+    else
+        git tag -a "v${VERSION}" -m "Release version ${VERSION}"
+        git push origin HEAD
+        git push origin "v${VERSION}"
+        info "Tag v${VERSION} pushed to origin"
+    fi
 else
-    git add "$GRADLE_PROPS"
-    git commit -m "chore: bump version to ${VERSION}"
-    info "Committed version bump"
-fi
-
-step "Creating git tag v${VERSION}"
-
-if [[ "$DRY_RUN" == true ]]; then
-    warn "[dry-run] Would create and push tag v${VERSION}"
-else
-    git tag -a "v${VERSION}" -m "Release version ${VERSION}"
-    git push origin HEAD
-    git push origin "v${VERSION}"
-    info "Tag v${VERSION} pushed to origin"
+    step "Skipping git commit/tag (--skip-git)"
+    info "No git commit/tag/push actions were executed"
 fi
 
 # --- JitPack: create GitHub release -----------------------------------------
 if [[ "$TARGET" == "jitpack" || "$TARGET" == "both" ]]; then
     step "Creating GitHub release"
 
-    if [[ "$DRY_RUN" == true ]]; then
+    if [[ "$SKIP_GIT" == true ]]; then
+        warn "Skipping GitHub release because --skip-git is enabled"
+    elif [[ "$DRY_RUN" == true ]]; then
         warn "[dry-run] Would create GitHub release v${VERSION}"
     else
         gh release create "v${VERSION}" \
