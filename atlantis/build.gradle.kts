@@ -116,8 +116,10 @@ afterEvaluate {
         repositories {
             maven {
                 name = "Sonatype"
-                val releasesRepoUrl = uri("https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/")
-                val snapshotsRepoUrl = uri("https://s01.oss.sonatype.org/content/repositories/snapshots/")
+                // OSSRH (s01.oss.sonatype.org) was shut down on 2025-06-30.
+                // These are the Central Portal-compatible endpoints.
+                val releasesRepoUrl = uri("https://ossrh-staging-api.central.sonatype.com/service/local/staging/deploy/maven2/")
+                val snapshotsRepoUrl = uri("https://central.sonatype.com/repository/maven-snapshots/")
 
                 // Critical: SNAPSHOT versions must go to snapshot repo, otherwise Sonatype rejects upload.
                 url = if (version.toString().endsWith("SNAPSHOT")) snapshotsRepoUrl else releasesRepoUrl

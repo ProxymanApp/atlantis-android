@@ -161,8 +161,9 @@ afterEvaluate {
         repositories {
             maven {
                 name = "sonatype"
-                val releasesRepoUrl = uri("https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/")
-                val snapshotsRepoUrl = uri("https://s01.oss.sonatype.org/content/repositories/snapshots/")
+                // OSSRH (s01.oss.sonatype.org) was sunset on 2025-06-30.
+                val releasesRepoUrl = uri("https://ossrh-staging-api.central.sonatype.com/service/local/staging/deploy/maven2/")
+                val snapshotsRepoUrl = uri("https://central.sonatype.com/repository/maven-snapshots/")
                 url = if (version.toString().endsWith("SNAPSHOT")) snapshotsRepoUrl else releasesRepoUrl
                 
                 credentials {
@@ -184,21 +185,20 @@ afterEvaluate {
 ```bash
 cd atlantis-android
 
-# Publish to staging repository
+# Publish artifacts to Sonatype Central API
 ./gradlew :atlantis:publishReleasePublicationToSonatypeRepository
 
 # Or publish all publications
 ./gradlew :atlantis:publishAllPublicationsToSonatypeRepository
 ```
 
-### 6. Release from Staging
+### 6. Release in Central Portal
 
-1. Log in to https://s01.oss.sonatype.org
-2. Go to "Staging Repositories"
-3. Find your repository (named `comproxyman-XXXX`)
-4. Click "Close" and wait for validation
-5. If validation passes, click "Release"
-6. Wait 10-30 minutes for sync to Maven Central
+1. Log in to https://central.sonatype.com
+2. Go to `Publishing -> Deployments`
+3. Find your deployment for namespace `com.proxyman`
+4. Click `Publish` (or wait if auto-publish is enabled)
+5. Wait 10-30 minutes for sync to Maven Central
 
 ---
 
@@ -344,7 +344,7 @@ Common issues:
 - Missing Sources JAR
 - Invalid signature
 
-Check the staging repository "Activity" tab for specific errors.
+Check deployment details in `https://central.sonatype.com/publishing/deployments` for specific validation errors.
 
 ---
 

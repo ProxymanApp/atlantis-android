@@ -240,13 +240,13 @@ if [[ "$TARGET" == "maven-central" || "$TARGET" == "both" ]]; then
     done
     info "All required credentials found in ~/.gradle/gradle.properties"
 
-    step "Publishing to Sonatype staging repository"
+    step "Publishing to Sonatype Central API"
 
     if [[ "$DRY_RUN" == true ]]; then
-        warn "[dry-run] Would publish to Sonatype staging"
+        warn "[dry-run] Would publish artifacts to Sonatype Central API"
     else
         ./gradlew :atlantis:publishReleasePublicationToSonatypeRepository --no-daemon
-        info "Published to Sonatype staging repository"
+        info "Published artifacts to Sonatype Central API"
     fi
 fi
 
@@ -299,11 +299,11 @@ fi
 echo ""
 
 if [[ "$TARGET" == "maven-central" || "$TARGET" == "both" ]]; then
-    echo -e "${GREEN}${BOLD}Published to Sonatype staging!${NC} Complete the release manually:"
-    echo -e "  1. Log in to ${CYAN}https://s01.oss.sonatype.org${NC}"
-    echo -e "  2. Go to ${BOLD}Staging Repositories${NC}"
-    echo -e "  3. Find your repository (${BOLD}comproxyman-XXXX${NC})"
-    echo -e "  4. Click ${BOLD}Close${NC} → wait for validation → click ${BOLD}Release${NC}"
+    echo -e "${GREEN}${BOLD}Uploaded to Sonatype Central publishing API.${NC} Complete release in Central Portal:"
+    echo -e "  1. Log in to ${CYAN}https://central.sonatype.com${NC}"
+    echo -e "  2. Go to ${BOLD}Publishing → Deployments${NC}"
+    echo -e "  3. Find your deployment for namespace ${BOLD}${GROUP_ID}${NC}"
+    echo -e "  4. Click ${BOLD}Publish${NC} (or wait if auto-publish is enabled)"
     echo -e "  5. Artifacts sync to Maven Central in ~10-30 minutes"
     echo ""
     echo -e "  Verify: ${CYAN}https://repo1.maven.org/maven2/com/proxyman/atlantis-android/${VERSION}/${NC}"
