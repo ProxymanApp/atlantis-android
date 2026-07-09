@@ -1,5 +1,6 @@
 package com.proxyman.atlantis
 
+import com.proxyman.atlantis.rule.Base64MockRule
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -8,10 +9,14 @@ import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 import java.util.concurrent.TimeUnit
 
 class AtlantisInterceptorTest {
+
+    @get:Rule
+    val base64MockRule = Base64MockRule()
     
     private lateinit var mockWebServer: MockWebServer
     private lateinit var client: OkHttpClient
