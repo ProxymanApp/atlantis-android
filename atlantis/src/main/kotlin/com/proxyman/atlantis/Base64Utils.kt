@@ -1,24 +1,27 @@
 package com.proxyman.atlantis
 
+import android.util.Base64
+
 /**
- * Utility for Base64 encoding that works in both Android runtime and JUnit tests.
- * 
- * Android's android.util.Base64 is not available in unit tests (only instrumented tests),
- * so we use java.util.Base64 which is available everywhere since API 26.
+ * Utility for Base64 encoding.
+ *
+ * Uses android.util.Base64 (available since API 8) rather than java.util.Base64 (API 26+), to
+ * keep this library's minSdk low. android.util.Base64's real implementation isn't present in the
+ * JVM used for plain JUnit tests, so calls are mocked there, see Base64MockRule.
  */
 internal object Base64Utils {
-    
+
     /**
      * Encode bytes to Base64 string without line wrapping
      */
     fun encode(data: ByteArray): String {
-        return java.util.Base64.getEncoder().encodeToString(data)
+        return Base64.encodeToString(data, Base64.NO_WRAP)
     }
-    
+
     /**
      * Decode Base64 string to bytes
      */
     fun decode(encoded: String): ByteArray {
-        return java.util.Base64.getDecoder().decode(encoded)
+        return Base64.decode(encoded, Base64.NO_WRAP)
     }
 }
