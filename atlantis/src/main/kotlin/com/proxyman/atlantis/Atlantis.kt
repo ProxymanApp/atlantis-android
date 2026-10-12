@@ -406,7 +406,7 @@ object Atlantis {
         messagesToSend.forEach { transporter.send(it) }
     }
 
-    private fun headersToSingleValueMap(headers: Headers): Map<String, String> {
+    internal fun headersToSingleValueMap(headers: Headers): Map<String, String> {
         if (headers.size == 0) return emptyMap()
         val map = LinkedHashMap<String, String>(headers.size)
         for (name in headers.names()) {

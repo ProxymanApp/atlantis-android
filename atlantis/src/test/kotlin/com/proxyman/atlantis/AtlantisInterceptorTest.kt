@@ -3,12 +3,16 @@ package com.proxyman.atlantis
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 
 class AtlantisInterceptorTest {
@@ -255,5 +259,177 @@ class AtlantisInterceptorTest {
         
         threads.forEach { it.start() }
         threads.forEach { it.join() }
+    }
+
+    @Test
+    fun `test interceptor does not buffer server-sent events stream`() {
+        val event = "data: tick\n\n"
+        mockWebServer.enqueue(MockResponse()
+            .setResponseCode(200)
+            .addHeader("Content-Type", "text/event-stream")
+            .setBody(event.repeat(3))
+            .throttleBody(event.length.toLong(), 1, TimeUnit.SECONDS))
+
+        val request = Request.Builder()
+            .url(mockWebServer.url("/api/events"))
+            .get()
+            .build()
+
+        val start = System.nanoTime()
+        val response = client.newCall(request).execute()
+        val firstLine = response.body!!.source().readUtf8Line()
+        val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)
+
+        assertEquals("data: tick", firstLine)
+        assertTrue("First event took ${elapsedMs}ms, stream was buffered", elapsedMs < 1000)
+        response.close()
+    }
+
+    @Test
+    fun `test interceptor returns response before body is downloaded`() {
+        val chunk = "{\"a\":1}"
+        mockWebServer.enqueue(MockResponse()
+            .setResponseCode(200)
+            .addHeader("Content-Type", "application/json")
+            .setBody(chunk.repeat(3))
+            .throttleBody(chunk.length.toLong(), 1, TimeUnit.SECONDS))
+
+        val request = Request.Builder()
+            .url(mockWebServer.url("/api/slow"))
+            .get()
+            .build()
+
+        val start = System.nanoTime()
+        val response = client.newCall(request).execute()
+        val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)
+
+        assertTrue("Response took ${elapsedMs}ms, body was buffered", elapsedMs < 1000)
+        assertEquals(chunk.repeat(3), response.body!!.string())
+    }
+
+    @Test
+    fun `test interceptor preserves server-sent events body for consumer`() {
+        val expectedBody = "data: one\n\ndata: two\n\n"
+        mockWebServer.enqueue(MockResponse()
+            .setResponseCode(200)
+            .addHeader("Content-Type", "text/event-stream; charset=utf-8")
+            .setBody(expectedBody))
+
+        val request = Request.Builder()
+            .url(mockWebServer.url("/api/events"))
+            .get()
+            .build()
+
+        val response = client.newCall(request).execute()
+
+        assertEquals(200, response.code)
+        assertEquals(expectedBody, response.body?.string())
+    }
+
+    @Test
+    fun `test interceptor does not block websocket messages`() {
+        mockWebServer.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
+                webSocket.send("first")
+            }
+        }))
+
+        val firstMessage = CountDownLatch(1)
+        val request = Request.Builder()
+            .url(mockWebServer.url("/ws"))
+            .build()
+
+        val webSocket = client.newWebSocket(request, Atlantis.wrapWebSocketListener(object : WebSocketListener() {
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                if (text == "first") firstMessage.countDown()
+            }
+        }))
+
+        assertTrue("First message was not delivered while the socket is open", firstMessage.await(1, TimeUnit.SECONDS))
+        webSocket.close(1000, null)
+    }
+
+    @Test
+    fun `test capturing body marks bodies larger than the limit as truncated`() {
+        var truncated: Boolean? = null
+        var captured: ByteArray? = null
+        val body = AtlantisInterceptor.CapturingResponseBody(
+            delegate = object : okhttp3.ResponseBody() {
+                override fun contentType() = null
+                override fun contentLength() = 100L * 1024 * 1024
+                override fun source() = okio.Buffer().writeUtf8("data")
+            },
+            onComplete = { data, isTruncated, _ ->
+                captured = data
+                truncated = isTruncated
+            }
+        )
+
+        body.source().readUtf8()
+
+        assertEquals(true, truncated)
+        assertEquals(0, captured!!.size)
+    }
+
+    @Test
+    fun `test recorder receives response once body is read`() {
+        val recorder = FakeRecorder()
+        mockWebServer.enqueue(MockResponse()
+            .setResponseCode(200)
+            .addHeader("Content-Type", "application/json")
+            .addHeader("Set-Cookie", "a=1")
+            .addHeader("Set-Cookie", "b=2")
+            .setBody("{\"message\":\"success\"}"))
+
+        val response = clientWith(recorder).newCall(Request.Builder().url(mockWebServer.url("/api/test")).build()).execute()
+        assertEquals("{\"message\":\"success\"}", response.body!!.string())
+
+        val trafficPackage = recorder.nextPackage()
+        assertEquals(200, trafficPackage.response!!.statusCode)
+        assertEquals("{\"message\":\"success\"}", decode(trafficPackage.responseBodyData))
+        assertEquals("a=1,b=2", trafficPackage.response!!.headers.single { it.key == "Set-Cookie" }.value)
+        assertNull(trafficPackage.error)
+    }
+
+    @Test
+    fun `test recorder receives response without body even if it is never closed`() {
+        val recorder = FakeRecorder()
+        mockWebServer.enqueue(MockResponse().setResponseCode(204))
+
+        clientWith(recorder).newCall(Request.Builder().url(mockWebServer.url("/api/empty")).build()).execute()
+
+        assertEquals(204, recorder.nextPackage().response!!.statusCode)
+    }
+
+    @Test
+    fun `test recorder receives failed response body as an error`() {
+        val recorder = FakeRecorder()
+        mockWebServer.enqueue(MockResponse()
+            .setResponseCode(200)
+            .addHeader("Content-Type", "application/json")
+            .setBody("{\"a\":1}".repeat(1000))
+            .setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY))
+
+        val response = clientWith(recorder).newCall(Request.Builder().url(mockWebServer.url("/api/test")).build()).execute()
+        assertThrows(java.io.IOException::class.java) { response.body!!.source().readUtf8() }
+
+        assertNotNull(recorder.nextPackage().error)
+    }
+
+    private fun clientWith(recorder: TrafficRecorder) = OkHttpClient.Builder()
+        .addInterceptor(AtlantisInterceptor(recorder))
+        .readTimeout(5, TimeUnit.SECONDS)
+        .build()
+
+    private fun decode(base64: String) = String(java.util.Base64.getDecoder().decode(base64))
+
+    private class FakeRecorder : TrafficRecorder {
+        private val packages = LinkedBlockingQueue<TrafficPackage>()
+
+        fun nextPackage(): TrafficPackage = packages.poll(5, TimeUnit.SECONDS) ?: error("No package recorded")
+
+        override fun sendPackage(trafficPackage: TrafficPackage) {
+            packages.add(trafficPackage)
+        }
     }
 }
