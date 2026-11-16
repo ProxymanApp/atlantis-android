@@ -5,12 +5,17 @@ import okhttp3.MediaType
 import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.Response
+import okhttp3.ResponseBody
 import okio.Buffer
 import okio.BufferedSink
+import okio.BufferedSource
+import okio.ForwardingSource
 import okio.GzipSource
+import okio.buffer
 import java.io.IOException
 import java.nio.charset.Charset
 import java.util.UUID
+import java.util.concurrent.Executors
 
 /**
  * OkHttp Interceptor that captures HTTP/HTTPS traffic and sends it to Proxyman
@@ -27,12 +32,18 @@ import java.util.UUID
  * 
  * Works automatically with Retrofit, Apollo, and any library that uses OkHttp.
  */
-class AtlantisInterceptor internal constructor() : Interceptor {
+class AtlantisInterceptor internal constructor(
+    private val recorder: TrafficRecorder = AtlantisRecorder
+) : Interceptor {
     
     companion object {
         private const val TAG = "AtlantisInterceptor"
         private const val MAX_BODY_SIZE = 52428800L // 50MB
         private val UTF8 = Charset.forName("UTF-8")
+        private val BODY_TOO_LARGE = "<Body too large>".toByteArray()
+        private val captureExecutor = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "Atlantis-Capture").apply { isDaemon = true }
+        }
     }
     
     @Throws(IOException::class)
@@ -60,18 +71,16 @@ class AtlantisInterceptor internal constructor() : Interceptor {
             response = chain.proceed(requestToSend)
         } catch (e: IOException) {
             // Request failed, but we still want to log it
-            // Create and send error package (best effort, ignore capture failures)
-            try {
+            val endAt = System.currentTimeMillis() / 1000.0
+            capture {
                 val trafficPackage = TrafficPackage(
                     id = requestId,
                     startAt = startTime,
                     request = captureRequestMetadata(originalRequest, capturedRequestBody),
-                    endAt = System.currentTimeMillis() / 1000.0,
+                    endAt = endAt,
                     error = CustomError.fromException(e)
                 )
-                Atlantis.sendPackage(trafficPackage)
-            } catch (captureError: Exception) {
-                // Silently ignore capture errors - never affect the app
+                recorder.sendPackage(trafficPackage)
             }
             
             throw e
@@ -83,24 +92,69 @@ class AtlantisInterceptor internal constructor() : Interceptor {
             return response
         }
 
-        // Request succeeded, now capture the response (best effort)
-        try {
-            val (atlantisResponse, responseBodyData) = captureResponse(response)
+        // Never read the body here: buffering it would delay the caller until the whole
+        // response is downloaded (forever for Server-Sent Events). Instead, copy the bytes
+        // as the caller reads them and send the flow from a background thread once the
+        // body is exhausted, closed or fails.
+        val responseBody = response.body ?: return response
+        return try {
+            if (hasNoBody(originalRequest, response, responseBody)) {
+                sendTrafficPackage(requestId, startTime, originalRequest, capturedRequestBody, response)
+                return response
+            }
+            val capturingBody = CapturingResponseBody(responseBody) { data, truncated, error ->
+                sendTrafficPackage(requestId, startTime, originalRequest, capturedRequestBody, response, data, truncated, error)
+            }
+            response.newBuilder().body(capturingBody).build()
+        } catch (captureError: Exception) {
+            response
+        }
+    }
+
+    private fun sendTrafficPackage(
+        requestId: String,
+        startTime: Double,
+        request: Request,
+        capturedRequestBody: ByteArray?,
+        response: Response,
+        data: ByteArray = ByteArray(0),
+        truncated: Boolean = false,
+        error: IOException? = null
+    ) {
+        val endAt = System.currentTimeMillis() / 1000.0
+        capture {
+            val (atlantisResponse, responseBodyData) = captureResponse(response, data, truncated)
             val trafficPackage = TrafficPackage(
                 id = requestId,
                 startAt = startTime,
-                request = captureRequestMetadata(originalRequest, capturedRequestBody),
+                request = captureRequestMetadata(request, capturedRequestBody),
                 response = atlantisResponse,
                 responseBodyData = responseBodyData,
-                endAt = System.currentTimeMillis() / 1000.0
+                endAt = endAt,
+                error = error?.let { CustomError.fromException(it) }
             )
-            Atlantis.sendPackage(trafficPackage)
-        } catch (captureError: Exception) {
-            // Silently ignore capture errors - never affect the app
+            recorder.sendPackage(trafficPackage)
         }
-        
-        return response
     }
+
+    /**
+     * Run capture work off the caller's thread, in order, ignoring any failure
+     */
+    private fun capture(block: () -> Unit) {
+        captureExecutor.execute {
+            try {
+                block()
+            } catch (captureError: Exception) {
+                // Silently ignore capture errors - never affect the app
+            }
+        }
+    }
+
+    /**
+     * Responses without a body may never be read or closed by the caller, so send them right away
+     */
+    private fun hasNoBody(request: Request, response: Response, body: ResponseBody): Boolean =
+        request.method == "HEAD" || response.code == 204 || response.code == 304 || body.contentLength() == 0L
     
     /**
      * Check if we can safely capture the request body
@@ -133,17 +187,9 @@ class AtlantisInterceptor internal constructor() : Interceptor {
         val url = request.url.toString()
         val method = request.method
         
-        // Capture headers
-        val headers = mutableMapOf<String, String>()
-        for (i in 0 until request.headers.size) {
-            val name = request.headers.name(i)
-            val value = request.headers.value(i)
-            headers[name] = value
-        }
-        
         // Process captured body (decompress if needed)
         val processedBody = if (capturedBody != null) {
-            processRequestBody(capturedBody, request.header("Content-Encoding"))
+            decompressIfGzip(capturedBody, request.header("Content-Encoding"))
         } else {
             null
         }
@@ -151,15 +197,15 @@ class AtlantisInterceptor internal constructor() : Interceptor {
         return com.proxyman.atlantis.Request.fromOkHttp(
             url = url,
             method = method,
-            headers = headers,
+            headers = Atlantis.headersToSingleValueMap(request.headers),
             body = processedBody
         )
     }
     
     /**
-     * Process captured request body (e.g., decompress gzip)
+     * Decompress a captured gzip body for readability
      */
-    private fun processRequestBody(data: ByteArray, contentEncoding: String?): ByteArray {
+    private fun decompressIfGzip(data: ByteArray, contentEncoding: String?): ByteArray {
         if (contentEncoding.equals("gzip", ignoreCase = true)) {
             return try {
                 val buffer = Buffer().write(data)
@@ -175,75 +221,25 @@ class AtlantisInterceptor internal constructor() : Interceptor {
     }
     
     /**
-     * Capture response details and body
+     * Capture response details and the body copied while the caller read it
      * Returns a Pair of (Response, Base64EncodedBody)
      */
-    private fun captureResponse(response: Response): Pair<com.proxyman.atlantis.Response, String> {
-        val statusCode = response.code
-        
-        // Capture headers
-        val headers = mutableMapOf<String, String>()
-        for (i in 0 until response.headers.size) {
-            val name = response.headers.name(i)
-            val value = response.headers.value(i)
-            headers[name] = value
-        }
-        
+    private fun captureResponse(
+        response: Response,
+        bodyData: ByteArray,
+        truncated: Boolean
+    ): Pair<com.proxyman.atlantis.Response, String> {
         val atlantisResponse = com.proxyman.atlantis.Response.fromOkHttp(
-            statusCode = statusCode,
-            headers = headers
+            statusCode = response.code,
+            headers = Atlantis.headersToSingleValueMap(response.headers)
         )
         
-        // Capture body (best effort)
-        val bodyData = captureResponseBody(response)
-        val bodyBase64 = if (bodyData != null && bodyData.isNotEmpty()) {
-            Base64Utils.encode(bodyData)
-        } else {
-            ""
-        }
+        val body = if (truncated) BODY_TOO_LARGE else decompressIfGzip(bodyData, response.header("Content-Encoding"))
+        val bodyBase64 = if (body.isNotEmpty()) Base64Utils.encode(body) else ""
         
         return Pair(atlantisResponse, bodyBase64)
     }
-    
-    /**
-     * Capture response body without consuming the original response
-     * Uses OkHttp's peekBody-like approach to safely read without affecting the caller
-     */
-    private fun captureResponseBody(response: Response): ByteArray? {
-        val responseBody = response.body ?: return null
-        
-        // Skip if body is too large
-        val contentLength = responseBody.contentLength()
-        if (contentLength > MAX_BODY_SIZE) {
-            return "<Body too large>".toByteArray()
-        }
-        
-        return try {
-            // Peek the body without consuming it
-            // This is safe because OkHttp buffers the response for us
-            val source = responseBody.source()
-            source.request(Long.MAX_VALUE) // Buffer the entire body
-            var buffer = source.buffer.clone()
-            
-            // Check if response is gzip compressed
-            val contentEncoding = response.header("Content-Encoding")
-            if (contentEncoding.equals("gzip", ignoreCase = true)) {
-                // Decompress for readability
-                val gzipSource = GzipSource(buffer)
-                val decompressedBuffer = Buffer()
-                decompressedBuffer.writeAll(gzipSource)
-                buffer = decompressedBuffer
-            }
-            
-            // Limit body size for safety
-            val size = minOf(buffer.size, MAX_BODY_SIZE)
-            buffer.readByteArray(size)
-        } catch (e: Exception) {
-            // Return null on any error - don't break the response
-            null
-        }
-    }
-    
+
     /**
      * A RequestBody wrapper that captures the body data as it's being written
      * This is non-destructive - the original body is written to the network normally
@@ -278,6 +274,84 @@ class AtlantisInterceptor internal constructor() : Interceptor {
             
             // Write the captured data to the actual sink
             sink.writeAll(captureBuffer)
+        }
+    }
+
+    /**
+     * A ResponseBody wrapper that copies the body data as the caller reads it
+     * [onComplete] is invoked once, when the stream is exhausted, closed or fails
+     */
+    internal class CapturingResponseBody(
+        private val delegate: ResponseBody,
+        private val onComplete: (data: ByteArray, truncated: Boolean, error: IOException?) -> Unit
+    ) : ResponseBody() {
+        
+        private val lock = Any()
+        private val captured = Buffer()
+        private var truncated = delegate.contentLength() > MAX_BODY_SIZE
+        private var error: IOException? = null
+        private var completed = false
+        
+        private val source: BufferedSource by lazy {
+            object : ForwardingSource(delegate.source()) {
+                override fun read(sink: Buffer, byteCount: Long): Long {
+                    val bytesRead = try {
+                        super.read(sink, byteCount)
+                    } catch (e: IOException) {
+                        synchronized(lock) { error = e }
+                        complete()
+                        throw e
+                    }
+                    if (bytesRead == -1L) {
+                        complete()
+                    } else {
+                        record(sink, sink.size - bytesRead, bytesRead)
+                    }
+                    return bytesRead
+                }
+                
+                override fun close() {
+                    complete()
+                    super.close()
+                }
+            }.buffer()
+        }
+        
+        override fun contentType(): MediaType? = delegate.contentType()
+        
+        override fun contentLength(): Long = delegate.contentLength()
+        
+        override fun source(): BufferedSource = source
+        
+        private fun record(sink: Buffer, offset: Long, byteCount: Long) {
+            try {
+                synchronized(lock) {
+                    if (completed) return
+                    if (!truncated) {
+                        if (captured.size + byteCount > MAX_BODY_SIZE) {
+                            truncated = true
+                            captured.clear()
+                        } else {
+                            sink.copyTo(captured, offset, byteCount)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                // Silently ignore capture errors - never affect the app
+            }
+        }
+        
+        private fun complete() {
+            try {
+                val (data, isTruncated, failure) = synchronized(lock) {
+                    if (completed) return
+                    completed = true
+                    Triple(captured.readByteArray(), truncated, error)
+                }
+                onComplete(data, isTruncated, failure)
+            } catch (e: Exception) {
+                // Silently ignore capture callback errors
+            }
         }
     }
 }
