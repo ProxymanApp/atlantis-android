@@ -1,7 +1,9 @@
 package com.proxyman.atlantis
 
 import com.google.gson.Gson
+import com.proxyman.atlantis.rule.Base64MockRule
 import org.junit.Assert.*
+import org.junit.Rule
 import org.junit.Test
 
 /**
@@ -12,6 +14,9 @@ import org.junit.Test
  * 3. WebSocket lifecycle produces the correct message types and shares one ID
  */
 class AtlantisWebSocketTest {
+
+    @get:Rule
+    val base64MockRule = Base64MockRule()
 
     private val gson = Gson()
 

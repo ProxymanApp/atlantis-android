@@ -1,10 +1,15 @@
 package com.proxyman.atlantis
 
 import com.google.gson.Gson
+import com.proxyman.atlantis.rule.Base64MockRule
 import org.junit.Assert.*
+import org.junit.Rule
 import org.junit.Test
 
 class MessageTest {
+
+    @get:Rule
+    val base64MockRule = Base64MockRule()
     
     private val gson = Gson()
 
