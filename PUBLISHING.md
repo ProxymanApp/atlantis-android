@@ -2,23 +2,24 @@
 
 ## Maven Central
 
-Use JDK 17 and Android SDK Platform 34. You need access to the [verified `com.proxyman` namespace](https://central.sonatype.org/register/namespace/) and a primary signing key whose public key is on a [supported keyserver](https://central.sonatype.org/publish/requirements/gpg/#distributing-your-public-key).
+A maintainer needs access to the [verified `com.proxyman` namespace](https://central.sonatype.org/register/namespace/) and a primary signing key whose public key is on a [supported keyserver](https://central.sonatype.org/publish/requirements/gpg/#distributing-your-public-key).
 
-1. Update `VERSION_NAME` and increment `VERSION_CODE` in `gradle.properties`. From the merged commit, create a local tag matching the version without a `v` prefix and build from a clean checkout of that tag.
-2. Run the tests and build the signed ZIP. Set `RELEASE_KEY_FINGERPRINT` to your primary key's fingerprint and supply `MAVEN_SIGNING_PASSWORD` for a protected key. If you use [Gradle signing properties](https://docs.gradle.org/current/userguide/signing_plugin.html#sec:signatory_credentials), skip the export.
+1. Have a repository admin create the `maven-central` GitHub Actions environment upstream and restrict it to `main`. Add `MAVEN_CENTRAL_USERNAME` and `MAVEN_CENTRAL_PASSWORD` as environment secrets with the [Central Portal token credentials](https://central.sonatype.org/publish/generate-portal-token/). Add `MAVEN_SIGNING_KEY` for the ASCII-armored private key and `MAVEN_SIGNING_PASSWORD` for its passphrase if protected.
+2. Merge a new `VERSION_NAME` and incremented `VERSION_CODE` in `gradle.properties`. Tag the resulting commit on `main` with the exact version without a `v` prefix, such as `1.0.1`, and push the tag upstream.
+3. After the workflow is merged, a maintainer with write access runs **Publish to Maven Central** from `main` in GitHub Actions and enters the tag. The workflow tests, signs, and uploads the bundle. Sonatype publishes it automatically after validation. The workflow waits for Sonatype to confirm publication and includes the deployment ID in the run summary.
 
-   ```bash
-   ./gradlew :atlantis:test
-   export MAVEN_SIGNING_KEY="$(gpg --armor --export-secret-keys "$RELEASE_KEY_FINGERPRINT")"
-   ./gradlew --no-daemon :atlantis:bundleMavenCentralRelease
-   ```
+If the workflow cannot confirm publication, check the deployment in [Central Portal](https://central.sonatype.com/publishing/deployments) before retrying. Find it by ID or by the name `atlantis-android-<tag>`. Use a new version and tag if validation requires a source change.
 
-3. Upload `atlantis/build/distributions/atlantis-android-<version>-central.zip` with **Publish Component** in [Central Portal](https://central.sonatype.com/publishing/deployments). Once validated, push the tag upstream and select **Publish**. Use a new version and tag if a validation fix changes the tagged source.
-4. Verify the published POM and AAR in [Maven Central](https://repo.maven.apache.org/maven2/com/proxyman/atlantis-android/).
+### Local bundle
 
-`./publish.sh --version 1.0.1` is an alternative that builds the ZIP and pushes the version commit and tag to `origin` before you upload it. If the push fails, retry pushing the existing refs. Add `--target both` to also create a GitHub Release using the authenticated GitHub CLI configured for `origin`.
+From a clean release tag, use JDK 17 and Android SDK Platform 34. Configure the signing key through `MAVEN_SIGNING_KEY` and `MAVEN_SIGNING_PASSWORD` or [Gradle signing properties](https://docs.gradle.org/current/userguide/signing_plugin.html#sec:signatory_credentials).
 
-Use `./gradlew :atlantis:publishToMavenLocal` to check packaging without a signing key.
+```bash
+./gradlew :atlantis:test
+./gradlew --no-daemon :atlantis:bundleMavenCentralRelease
+```
+
+You can upload `atlantis/build/distributions/atlantis-android-<version>-central.zip` in Central Portal. To check Maven packaging without a signing key, run `./gradlew :atlantis:publishToMavenLocal`.
 
 ### Snapshots
 
