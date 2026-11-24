@@ -1,9 +1,17 @@
+import java.util.concurrent.Callable
+
 plugins {
     id("com.android.library")
     id("org.jetbrains.kotlin.android")
     id("maven-publish")
     id("signing")
 }
+
+val libraryGroup = providers.gradleProperty("GROUP").get()
+val libraryArtifact = providers.gradleProperty("POM_ARTIFACT_ID").get()
+val libraryVersion = providers.gradleProperty("VERSION_NAME").get()
+val isSnapshot = libraryVersion.endsWith("-SNAPSHOT")
+val centralRepository = layout.buildDirectory.dir("central-repository")
 
 android {
     namespace = "com.proxyman.atlantis"
@@ -15,7 +23,7 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
         
-        buildConfigField("String", "VERSION_NAME", "\"${project.findProperty("VERSION_NAME") ?: "1.0.0"}\"")
+        buildConfigField("String", "VERSION_NAME", "\"$libraryVersion\"")
     }
 
     buildTypes {
@@ -65,8 +73,6 @@ dependencies {
     
     // Testing
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.mockito:mockito-core:5.8.0")
-    testImplementation("org.mockito.kotlin:mockito-kotlin:5.2.1")
     testImplementation("com.squareup.okhttp3:okhttp:4.12.0")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
@@ -81,9 +87,9 @@ afterEvaluate {
             create<MavenPublication>("release") {
                 from(components["release"])
                 
-                groupId = project.findProperty("GROUP") as String? ?: "com.proxyman"
-                artifactId = project.findProperty("POM_ARTIFACT_ID") as String? ?: "atlantis-android"
-                version = project.findProperty("VERSION_NAME") as String? ?: "1.0.0"
+                groupId = libraryGroup
+                artifactId = libraryArtifact
+                version = libraryVersion
                 
                 pom {
                     name.set(project.findProperty("POM_NAME") as String? ?: "Atlantis Android")
@@ -114,32 +120,55 @@ afterEvaluate {
         }
 
         repositories {
-            maven {
-                name = "Sonatype"
-                // OSSRH (s01.oss.sonatype.org) was shut down on 2025-06-30.
-                // These are the Central Portal-compatible endpoints.
-                val releasesRepoUrl = uri("https://ossrh-staging-api.central.sonatype.com/service/local/staging/deploy/maven2/")
-                val snapshotsRepoUrl = uri("https://central.sonatype.com/repository/maven-snapshots/")
-
-                // Critical: SNAPSHOT versions must go to snapshot repo, otherwise Sonatype rejects upload.
-                url = if (version.toString().endsWith("SNAPSHOT")) snapshotsRepoUrl else releasesRepoUrl
-
-                credentials {
-                    username = project.findProperty("ossrhUsername") as String?
-                    password = project.findProperty("ossrhPassword") as String?
+            if (isSnapshot) {
+                maven {
+                    name = "Sonatype"
+                    url = uri("https://central.sonatype.com/repository/maven-snapshots/")
+                    credentials {
+                        username = project.findProperty("ossrhUsername") as String?
+                        password = project.findProperty("ossrhPassword") as String?
+                    }
+                }
+            } else {
+                maven {
+                    name = "CentralBundle"
+                    url = uri(centralRepository)
                 }
             }
         }
     }
 
     signing {
-        // Maven Local smoke publishes should not require GPG setup; only remote publish tasks
-        // (Sonatype/`publish`) must be signed. Without this guard, `publishToMavenLocal`
-        // fails early with "no configured signatory", which blocks dry-run/JitPack flows.
-        isRequired = gradle.startParameter.taskNames.any { taskName ->
-            taskName.contains("publish", ignoreCase = true) &&
-                !taskName.contains("MavenLocal", ignoreCase = true)
+        providers.environmentVariable("MAVEN_SIGNING_KEY").orNull?.let { key ->
+            val password = providers.environmentVariable("MAVEN_SIGNING_PASSWORD").orElse("").get()
+            useInMemoryPgpKeys(key, password)
         }
+        setRequired(Callable {
+            gradle.taskGraph.allTasks.any {
+                it is PublishToMavenRepository && it.publication.name == "release"
+            }
+        })
         sign(publishing.publications["release"])
+    }
+
+    if (!isSnapshot) {
+        val cleanStaging = tasks.register<Delete>("cleanCentralRepository") {
+            delete(centralRepository)
+        }
+        val publishStaging = tasks.named("publishReleasePublicationToCentralBundleRepository") {
+            dependsOn(cleanStaging)
+        }
+        val versionPath = "${libraryGroup.replace('.', '/')}/$libraryArtifact/$libraryVersion"
+        tasks.register<Zip>("bundleMavenCentralRelease") {
+            group = "publishing"
+            description = "Builds the signed deployment bundle for the Maven Central Portal."
+            dependsOn(publishStaging)
+            from(centralRepository.map { it.dir(versionPath) }) {
+                exclude("**/*.asc.*")
+                into(versionPath)
+            }
+            archiveFileName.set("$libraryArtifact-$libraryVersion-central.zip")
+            destinationDirectory.set(layout.buildDirectory.dir("distributions"))
+        }
     }
 }
