@@ -20,7 +20,7 @@ Atlantis Android is a companion library to [Proxyman](https://proxyman.com) that
 
 ## Requirements
 
-- Android API 26+ (Android 8.0 Oreo)
+- Android API 21+ for the library on `main`. The `1.0.0` release and the sample app require API 26+.
 - OkHttp 4.x or 5.x
 - Kotlin 1.9+
 
@@ -42,7 +42,7 @@ Then add the dependency in your module's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    debugImplementation("com.github.ProxymanApp:atlantis-android:v1.0.0")
+    debugImplementation("com.github.ProxymanApp:atlantis-android:1.0.0")
 }
 ```
 
@@ -50,17 +50,17 @@ Or with Groovy (`build.gradle`):
 
 ```groovy
 dependencies {
-    debugImplementation 'com.github.ProxymanApp:atlantis-android:v1.0.0'
+    debugImplementation 'com.github.ProxymanApp:atlantis-android:1.0.0'
 }
 ```
 
 ### Option 2: Maven Central
 
-Add the dependency in your module's `build.gradle.kts`:
+To install a version listed in [Maven Central](https://repo.maven.apache.org/maven2/com/proxyman/atlantis-android/), add `mavenCentral()` and replace `<published-version>` with that version.
 
 ```kotlin
 dependencies {
-    debugImplementation("com.proxyman:atlantis-android:1.0.0")
+    debugImplementation("com.proxyman:atlantis-android:<published-version>")
 }
 ```
 
@@ -68,11 +68,15 @@ Or with Groovy (`build.gradle`):
 
 ```groovy
 dependencies {
-    debugImplementation 'com.proxyman:atlantis-android:1.0.0'
+    debugImplementation 'com.proxyman:atlantis-android:<published-version>'
 }
 ```
 
+Both options require an OkHttp dependency in your app and `google()` for AndroidX.
+
 ## Quick Start
+
+With `debugImplementation`, place all Atlantis calls and imports in `src/debug`. If shared app code calls your setup function, supply a matching no-op in `src/release`.
 
 ### 1. Initialize in Application
 
@@ -80,10 +84,7 @@ dependencies {
 class MyApplication : Application() {
     override fun onCreate() {
         super.onCreate()
-        
-        if (BuildConfig.DEBUG) {
-            Atlantis.start(this)
-        }
+        Atlantis.start(this)
     }
 }
 ```

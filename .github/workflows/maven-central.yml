@@ -1,0 +1,126 @@
+name: Publish to Maven Central
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Upstream release tag, for example 1.0.1
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: maven-central-${{ inputs.tag }}
+
+jobs:
+  publish:
+    if: github.repository == 'ProxymanApp/atlantis-android' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: maven-central
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout upstream main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out the release tag
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Enter a release tag such as 1.0.1."
+            exit 1
+          fi
+
+          if ! release_commit=$(git rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}^{commit}"); then
+            echo "Release tag $RELEASE_TAG was not found upstream."
+            exit 1
+          fi
+
+          if ! git rev-list --first-parent HEAD | grep -Fx "$release_commit" >/dev/null; then
+            echo "The release tag must point to a commit on main's first-parent history."
+            exit 1
+          fi
+
+          git checkout --detach "$release_commit"
+          if [[ "$(sed -n 's/^VERSION_NAME=//p' gradle.properties)" != "$RELEASE_TAG" ]]; then
+            echo "The release tag must match VERSION_NAME in gradle.properties."
+            exit 1
+          fi
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          java-version: '17'
+          distribution: temurin
+
+      - name: Run unit tests
+        run: ./gradlew --no-daemon :atlantis:test
+
+      - name: Build the signed Maven Central bundle
+        env:
+          MAVEN_SIGNING_KEY: ${{ secrets.MAVEN_SIGNING_KEY }}
+          MAVEN_SIGNING_PASSWORD: ${{ secrets.MAVEN_SIGNING_PASSWORD }}
+        run: |
+          : "${MAVEN_SIGNING_KEY:?Set MAVEN_SIGNING_KEY in the maven-central environment}"
+          ./gradlew --no-daemon :atlantis:bundleMavenCentralRelease
+
+      - name: Publish release through Central Portal
+        env:
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+        run: |
+          : "${MAVEN_CENTRAL_USERNAME:?Set MAVEN_CENTRAL_USERNAME in the maven-central environment}"
+          : "${MAVEN_CENTRAL_PASSWORD:?Set MAVEN_CENTRAL_PASSWORD in the maven-central environment}"
+
+          deployment_name="atlantis-android-${RELEASE_TAG}"
+          bundle="atlantis/build/distributions/${deployment_name}-central.zip"
+          token=$(printf '%s:%s' "$MAVEN_CENTRAL_USERNAME" "$MAVEN_CENTRAL_PASSWORD" | base64 | tr -d '\n')
+          portal_api=https://central.sonatype.com/api/v1/publisher
+
+          if ! deployment_id=$(printf 'Authorization: Bearer %s\n' "$token" |
+            curl --fail --silent --show-error --max-time 120 --header @- \
+              --form "bundle=@$bundle;type=application/octet-stream" \
+              "$portal_api/upload?publishingType=AUTOMATIC&name=$deployment_name") ||
+            [[ ! "$deployment_id" =~ ^[[:xdigit:]]{8}(-[[:xdigit:]]{4}){3}-[[:xdigit:]]{12}$ ]]; then
+            echo "Upload did not return a deployment ID. Check Central Portal for $deployment_name before retrying."
+            exit 1
+          fi
+
+          printf 'Deployment `%s` in [Central Portal](https://central.sonatype.com/publishing/deployments).\n\n' \
+            "$deployment_id" >> "$GITHUB_STEP_SUMMARY"
+
+          for ((attempt = 0; attempt < 20; attempt++)); do
+            if ((attempt > 0)); then sleep 15; fi
+            if state=$(printf 'Authorization: Bearer %s\n' "$token" |
+              curl --fail --silent --show-error --max-time 10 --header @- --request POST \
+                "$portal_api/status?id=$deployment_id" |
+              jq -er --arg id "$deployment_id" 'select(.deploymentId == $id) | .deploymentState'); then
+              case "$state" in
+                PUBLISHED)
+                  printf 'Published `com.proxyman:atlantis-android:%s` to Maven Central.\n' \
+                    "$RELEASE_TAG" >> "$GITHUB_STEP_SUMMARY"
+                  exit 0
+                  ;;
+                FAILED)
+                  echo "Sonatype rejected the deployment. See the validation errors in Central Portal." |
+                    tee -a "$GITHUB_STEP_SUMMARY"
+                  exit 1
+                  ;;
+                PENDING|VALIDATING|VALIDATED|PUBLISHING)
+                  echo "Central Portal status is $state."
+                  ;;
+              esac
+            fi
+          done
+
+          echo "Publication could not be confirmed. Check the deployment in Central Portal before retrying." |
+            tee -a "$GITHUB_STEP_SUMMARY"
+          exit 1

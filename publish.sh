@@ -2,7 +2,7 @@
 # publish.sh — Publish Atlantis Android to JitPack and/or Maven Central.
 #
 # Usage:
-#   ./publish.sh --version 1.2.0                            # publish to maven-central
+#   ./publish.sh --version 1.2.0                            # prepare a Maven Central bundle
 #   ./publish.sh --target jitpack       --version 1.2.0
 #   ./publish.sh --target maven-central  --version 1.2.0
 #   ./publish.sh --target maven-central  --version 1.2.0 --skip-git
@@ -12,7 +12,7 @@
 #   --target   jitpack | maven-central | both      (optional, defaults to maven-central)
 #   --version  Semver string                   (required, e.g. 1.2.0 or 1.2.0-SNAPSHOT)
 #   --skip-git Skip commit/tag/release actions     (optional)
-#   --dry-run  Skip destructive actions             (optional)
+#   --dry-run  Run local build checks only
 
 set -euo pipefail
 
@@ -60,10 +60,12 @@ DRY_RUN=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --target)
+            [[ -n "${2:-}" && "$2" != --* ]] || fail "--target requires a value."
             TARGET="$2"
             shift 2
             ;;
         --version)
+            [[ -n "${2:-}" && "$2" != --* ]] || fail "--version requires a value."
             VERSION="$2"
             shift 2
             ;;
@@ -98,7 +100,7 @@ if [[ -z "$VERSION" ]]; then
     fail "--version is required (e.g. 1.2.0)"
 fi
 
-if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-SNAPSHOT)?$'; then
+if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-SNAPSHOT)?$ ]]; then
     fail "Invalid version format '$VERSION'. Expected semver like 1.2.0 or 1.2.0-SNAPSHOT"
 fi
 
@@ -138,7 +140,7 @@ step "Validating prerequisites"
 command -v java >/dev/null 2>&1 || fail "'java' not found. Install JDK 17+."
 info "java found: $(java -version 2>&1 | head -1)"
 
-if [[ "$TARGET" == "jitpack" || "$TARGET" == "both" ]]; then
+if [[ "$SKIP_GIT" == false && "$DRY_RUN" == false && ( "$TARGET" == "jitpack" || "$TARGET" == "both" ) ]]; then
     command -v gh >/dev/null 2>&1 || fail "'gh' (GitHub CLI) not found. Install via: brew install gh"
     info "gh found: $(gh --version | head -1)"
 fi
@@ -146,11 +148,16 @@ fi
 if [[ "$SKIP_GIT" == false ]]; then
     command -v git >/dev/null 2>&1 || fail "'git' not found."
     info "git found: $(git --version)"
-fi
-
-if [[ "$TARGET" == "maven-central" || "$TARGET" == "both" ]]; then
-    command -v gpg >/dev/null 2>&1 || fail "'gpg' not found. Install via: brew install gnupg"
-    info "gpg found: $(gpg --version | head -1)"
+    if [[ "$DRY_RUN" == false ]]; then
+        RELEASE_BRANCH=$(git symbolic-ref --short HEAD) || fail "Start from a branch checkout or use --skip-git."
+        [[ -z "$(git status --porcelain)" ]] || fail "Start from a clean checkout."
+        if git show-ref --verify --quiet "refs/tags/$VERSION" || git show-ref --verify --quiet "refs/tags/v$VERSION"; then
+            fail "A local tag for $VERSION already exists."
+        fi
+        REMOTE_TAGS=$(git ls-remote --tags origin "refs/tags/$VERSION" "refs/tags/v$VERSION") ||
+            fail "Cannot check existing tags on origin."
+        [[ -z "$REMOTE_TAGS" ]] || fail "A tag for $VERSION already exists on origin."
+    fi
 fi
 
 # Cross-platform in-place replace utility (BSD/GNU sed compatibility).
@@ -167,9 +174,9 @@ replace_line() {
 }
 
 # ---------------------------------------------------------------------------
-# Step 2: Update version in gradle.properties
+# Step 2: Select the build version
 # ---------------------------------------------------------------------------
-step "Updating version in $GRADLE_PROPS"
+step "Selecting the build version"
 
 # Read current VERSION_CODE and increment
 CURRENT_CODE=$(grep '^VERSION_CODE=' "$GRADLE_PROPS" | cut -d'=' -f2)
@@ -178,75 +185,36 @@ if ! [[ "$CURRENT_CODE" =~ ^[0-9]+$ ]]; then
 fi
 NEW_CODE=$((CURRENT_CODE + 1))
 
-# Replace VERSION_NAME
-replace_line "VERSION_NAME" "VERSION_NAME=${VERSION}" "$GRADLE_PROPS"
-# Replace VERSION_CODE
-replace_line "VERSION_CODE" "VERSION_CODE=${NEW_CODE}" "$GRADLE_PROPS"
+BUILD_VERSION="-PVERSION_NAME=$VERSION"
 
 info "VERSION_NAME → ${VERSION}"
 info "VERSION_CODE → ${NEW_CODE} (was ${CURRENT_CODE})"
 
 # ---------------------------------------------------------------------------
-# Step 3: Run unit tests
+# Step 3: Verify the build and Maven packaging
 # ---------------------------------------------------------------------------
-step "Running unit tests"
+step "Testing and checking Maven packaging"
 
-./gradlew :atlantis:test --no-daemon
-info "All tests passed"
-
-# ---------------------------------------------------------------------------
-# Step 4: Build release AAR
-# ---------------------------------------------------------------------------
-step "Building release AAR"
-
-./gradlew :atlantis:assembleRelease --no-daemon
-info "Release AAR built successfully"
+SMOKE_REPOSITORY=$(mktemp -d)
+trap 'rm -rf -- "$SMOKE_REPOSITORY"' EXIT
+./gradlew --no-daemon "$BUILD_VERSION" "-Dmaven.repo.local=$SMOKE_REPOSITORY" \
+    :atlantis:test :atlantis:assembleRelease :atlantis:publishToMavenLocal
 
 # ---------------------------------------------------------------------------
-# Step 5: Publish to Maven Local (smoke test)
+# Maven Central
 # ---------------------------------------------------------------------------
-step "Publishing to Maven Local (smoke test)"
-
-./gradlew :atlantis:publishToMavenLocal --no-daemon
-GROUP_ID=$(grep '^GROUP=' "$GRADLE_PROPS" | cut -d'=' -f2)
-ARTIFACT_ID=$(grep '^POM_ARTIFACT_ID=' "$GRADLE_PROPS" | cut -d'=' -f2)
-M2_GROUP_PATH="${GROUP_ID//./\/}"
-info "Published to Maven Local (~/.m2/repository/${M2_GROUP_PATH}/${ARTIFACT_ID}/${VERSION}/)"
-
-# ---------------------------------------------------------------------------
-# Target-specific steps
-# ---------------------------------------------------------------------------
-
-# --- Maven Central: check creds + publish to Sonatype (before tagging) -----
 if [[ "$TARGET" == "maven-central" || "$TARGET" == "both" ]]; then
-    step "Validating Gradle Sonatype publish task"
-
-    if ! ./gradlew :atlantis:tasks --all | grep -q "publishReleasePublicationToSonatypeRepository"; then
-        fail "Task ':atlantis:publishReleasePublicationToSonatypeRepository' not found. Check atlantis/build.gradle.kts Sonatype repository name/config."
-    fi
-    info "Sonatype publish task is available"
-
-    step "Checking Maven Central credentials"
-
-    GRADLE_HOME_PROPS="$HOME/.gradle/gradle.properties"
-    if [[ ! -f "$GRADLE_HOME_PROPS" ]]; then
-        fail "~/.gradle/gradle.properties not found. See PUBLISHING.md for setup instructions."
-    fi
-
-    for key in ossrhUsername ossrhPassword signing.keyId signing.password signing.secretKeyRingFile; do
-        if ! grep -Fq "${key}=" "$GRADLE_HOME_PROPS" 2>/dev/null; then
-            fail "Missing '${key}' in ~/.gradle/gradle.properties"
-        fi
-    done
-    info "All required credentials found in ~/.gradle/gradle.properties"
-
-    step "Publishing to Sonatype Central API"
-
-    if [[ "$DRY_RUN" == true ]]; then
-        warn "[dry-run] Would publish artifacts to Sonatype Central API"
+    if [[ "$VERSION" == *-SNAPSHOT ]]; then
+        step "Publishing snapshot to Maven Central"
+        CENTRAL_TASK=:atlantis:publishReleasePublicationToSonatypeRepository
     else
-        ./gradlew :atlantis:publishReleasePublicationToSonatypeRepository --no-daemon
-        info "Published artifacts to Sonatype Central API"
+        step "Building the signed Maven Central bundle"
+        CENTRAL_TASK=:atlantis:bundleMavenCentralRelease
+    fi
+    if [[ "$DRY_RUN" == true ]]; then
+        warn "[dry-run] Would run $CENTRAL_TASK"
+    else
+        ./gradlew --no-daemon "$BUILD_VERSION" "$CENTRAL_TASK"
     fi
 fi
 
@@ -257,20 +225,21 @@ if [[ "$SKIP_GIT" == false ]]; then
     if [[ "$DRY_RUN" == true ]]; then
         warn "[dry-run] Would commit gradle.properties changes"
     else
+        replace_line "VERSION_NAME" "VERSION_NAME=${VERSION}" "$GRADLE_PROPS"
+        replace_line "VERSION_CODE" "VERSION_CODE=${NEW_CODE}" "$GRADLE_PROPS"
         git add "$GRADLE_PROPS"
         git commit -m "chore: bump version to ${VERSION}"
         info "Committed version bump"
     fi
 
-    step "Creating git tag v${VERSION}"
+    step "Creating Git tag $VERSION"
 
     if [[ "$DRY_RUN" == true ]]; then
-        warn "[dry-run] Would create and push tag v${VERSION}"
+        warn "[dry-run] Would create and push tag $VERSION"
     else
-        git tag -a "v${VERSION}" -m "Release version ${VERSION}"
-        git push origin HEAD
-        git push origin "v${VERSION}"
-        info "Tag v${VERSION} pushed to origin"
+        git tag -a "$VERSION" -m "Release version $VERSION"
+        git push --atomic origin "HEAD:refs/heads/$RELEASE_BRANCH" "refs/tags/$VERSION"
+        info "Pushed $RELEASE_BRANCH and tag $VERSION to origin"
     fi
 else
     step "Skipping git commit/tag (--skip-git)"
@@ -284,12 +253,13 @@ if [[ "$TARGET" == "jitpack" || "$TARGET" == "both" ]]; then
     if [[ "$SKIP_GIT" == true ]]; then
         warn "Skipping GitHub release because --skip-git is enabled"
     elif [[ "$DRY_RUN" == true ]]; then
-        warn "[dry-run] Would create GitHub release v${VERSION}"
+        warn "[dry-run] Would create GitHub release $VERSION"
     else
-        gh release create "v${VERSION}" \
-            --title "v${VERSION}" \
+        gh release create "$VERSION" \
+            --verify-tag \
+            --title "$VERSION" \
             --generate-notes
-        info "GitHub release v${VERSION} created"
+        info "GitHub release $VERSION created"
     fi
 fi
 
@@ -298,24 +268,18 @@ fi
 # ---------------------------------------------------------------------------
 echo ""
 
-if [[ "$TARGET" == "maven-central" || "$TARGET" == "both" ]]; then
-    echo -e "${GREEN}${BOLD}Uploaded to Sonatype Central publishing API.${NC} Complete release in Central Portal:"
-    echo -e "  1. Log in to ${CYAN}https://central.sonatype.com${NC}"
-    echo -e "  2. Go to ${BOLD}Publishing → Deployments${NC}"
-    echo -e "  3. Find your deployment for namespace ${BOLD}${GROUP_ID}${NC}"
-    echo -e "  4. Click ${BOLD}Publish${NC} (or wait if auto-publish is enabled)"
-    echo -e "  5. Artifacts sync to Maven Central in ~10-30 minutes"
-    echo ""
-    echo -e "  Verify: ${CYAN}https://repo1.maven.org/maven2/com/proxyman/atlantis-android/${VERSION}/${NC}"
-    echo ""
+if [[ "$DRY_RUN" == false && "$VERSION" != *-SNAPSHOT && ( "$TARGET" == "maven-central" || "$TARGET" == "both" ) ]]; then
+    ARTIFACT_ID=$(grep '^POM_ARTIFACT_ID=' "$GRADLE_PROPS" | cut -d'=' -f2)
+    info "Maven Central bundle: atlantis/build/distributions/${ARTIFACT_ID}-${VERSION}-central.zip"
+    info "Upload the bundle in Central Portal, then publish it after validation. See PUBLISHING.md."
 fi
 
-if [[ "$TARGET" == "jitpack" || "$TARGET" == "both" ]]; then
+if [[ "$DRY_RUN" == false && "$SKIP_GIT" == false && ( "$TARGET" == "jitpack" || "$TARGET" == "both" ) ]]; then
     echo -e "${GREEN}${BOLD}JitPack ready!${NC} Builds automatically when the dependency is first requested."
-    echo -e "  JitPack status: ${CYAN}https://jitpack.io/#ProxymanApp/atlantis${NC}"
+    echo -e "  JitPack status: ${CYAN}https://jitpack.io/#ProxymanApp/atlantis-android${NC}"
     echo ""
     echo -e "  Users can add the dependency:"
-    echo -e "    ${BOLD}implementation(\"com.github.ProxymanApp:atlantis:v${VERSION}\")${NC}"
+    echo -e "    ${BOLD}implementation(\"com.github.ProxymanApp:atlantis-android:${VERSION}\")${NC}"
     echo ""
 fi
 

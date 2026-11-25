@@ -7,7 +7,7 @@ import android.util.Base64
  *
  * Uses android.util.Base64 (available since API 8) rather than java.util.Base64 (API 26+), to
  * keep this library's minSdk low. android.util.Base64's real implementation isn't present in the
- * JVM used for plain JUnit tests, so calls are mocked there, see Base64MockRule.
+ * JVM used for plain JUnit tests, so the test sources supply a JVM implementation.
  */
 internal object Base64Utils {
 
